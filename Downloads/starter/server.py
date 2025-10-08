@@ -1,9 +1,9 @@
-
 import socket
 import hashlib
 from aes import AES
 from key import Key
-
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
 
 class Server:
     def __init__(self, addr, port=14167, buffer_size=1024):
@@ -23,7 +23,6 @@ class Server:
         if buffer_size is None:
             buffer_size = self.buffer_size
         msg_bytes = self.conn.recv(buffer_size)
-
         return msg_bytes
 
     def close(self):
@@ -31,16 +30,63 @@ class Server:
 
 
 if __name__ == '__main__':
+
     server = Server('localhost', 14167)
+    private_key = rsa.generate_private_key(public_exponent= 3, key_size=2048)
+    public_key = private_key.public_key()
+    public_dev = public_key.public_bytes(
+        encoding = serialization.Encoding.PEM,
+        format = serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    server.send(public_dev)
+
+    encrypted_key = server.recv(4096)
+    aes_key = private_key.decrypt(
+        encrypted_key,
+        padding.OAEP(
+            mgf = padding.MGF1(algorithm = hashes.SHA256()),
+            algorithm = hashes.SHA256(),
+            label = None
+        )
+    )
+
+    aes = AES(aes_key)
+
+    #Looped chat
     while True:
-        # TODO: your code here
-        msg = server.recv(1024).decode()
-        print("From connected client: " + str(msg))
-        msg = input('> ')
-        server.send(msg.encode())
-        if not msg or msg == 'exit':
-            print("Server terminated chat")
+        data = server.recv(4096)
+        if not data:
+            print("Client disconnected.")
             break
-        
-        # TODO: your code here
+
+        try:
+            ciphertext_recv, digest_recv = data.split(b'||')
+        except ValueError:
+            print("Received malformed message (missing delimiter).")
+            continue
+
+        # Verify integrity
+        new_digest = hashlib.sha256(ciphertext_recv).digest()
+        if new_digest != digest_recv:
+            print("Message integrity check FAILED!")
+            continue
+
+        # Decrypt message
+        msg_recv = aes.decrypt(ciphertext_recv)
+        print("From connected client:", msg_recv)
+
+        if msg_recv.lower() == 'exit':
+            print("Client exited chat.")
+            break
+
+        # Input server response
+        msg_send = input('> ')
+        ciphertext = aes.encrypt(msg_send)
+        digest = hashlib.sha256(ciphertext).digest()
+        server.send(ciphertext + b'||' + digest)
+
+        if msg_send.lower() == 'exit':
+            print("Exiting chat...")
+            break
+
     server.close()
